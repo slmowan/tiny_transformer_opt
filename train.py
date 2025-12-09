@@ -149,45 +149,17 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
                         learning_rate=current_lr,
                         gradient_norm=grad_norm
                     )
-                    
+
                     pbar.set_postfix({
                         'loss': f'{loss.item():.4f}',
                         'lr': f'{current_lr:.6f}',
                         'grad': f'{grad_norm:.4f}'
                     })
-                
-                # Evaluation
-                if step % config.eval_interval == 0:
-                    val_loss, val_perplexity = evaluate(
-                        model, val_dataset, config.batch_size, device
+
+                    print(
+                        f"Step {step} | Train Loss: {loss.item():.4f} | "
+                        f"LR: {current_lr:.6f} | Grad Norm: {grad_norm:.4f}"
                     )
-
-                    logger.log(
-                        step=step,
-                        val_loss=val_loss,
-                        val_perplexity=val_perplexity
-                    )
-
-                    print(f"\nStep {step} | Val Loss: {val_loss:.4f} | Perplexity: {val_perplexity:.2f}")
-
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        best_checkpoint_path = os.path.join(
-                            config.checkpoint_dir,
-                            f"{experiment_name}_best.pt"
-                        )
-                        save_checkpoint(model, optimizer, step, val_loss, best_checkpoint_path)
-                        print(f"New best checkpoint saved to {best_checkpoint_path}")
-
-                    # Generate sample
-                    if step % (config.eval_interval * 5) == 0:
-                        sample = generate_sample(
-                            model, train_dataset,
-                            prompt="ROMEO:",
-                            max_tokens=100,
-                            device=device
-                        )
-                        print(f"\nGenerated sample:\n{sample}\n")
                 
                 # Save periodic checkpoints only if enabled
                 if config.save_interval and config.save_interval > 0 and step % config.save_interval == 0:
@@ -210,6 +182,15 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
             val_loss, val_perplexity = evaluate(
                 model, val_dataset, config.batch_size, device
             )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_checkpoint_path = os.path.join(
+                    config.checkpoint_dir,
+                    f"{experiment_name}_best.pt"
+                )
+                save_checkpoint(model, optimizer, step, val_loss, best_checkpoint_path)
+                print(f"New best checkpoint saved to {best_checkpoint_path}")
 
             logger.log(
                 step=step,
