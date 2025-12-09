@@ -1,6 +1,6 @@
 """
 Main training script for comparing optimization algorithms
-Supports training with SGD, Momentum, Adagrad, and Adam
+Supports training with SGD, Momentum, Adagrad, Adam, and RAdam
 """
 
 import torch
@@ -11,11 +11,11 @@ import numpy as np
 from tqdm import tqdm
 
 from config import Config
-from model import TinyTransformerLM
-from optimizers import SGD, MomentumSGD, Adagrad, Adam
+from model import GPT, GPTConfig
+from optimizers import SGD, MomentumSGD, Adagrad, Adam, RAdam
 from utils import (
-    load_data, get_batch, LRScheduler, clip_gradients, 
-    compute_gradient_norm, evaluate, save_checkpoint, 
+    load_data, get_batch, LRScheduler, clip_gradients,
+    compute_gradient_norm, evaluate, save_checkpoint,
     generate_sample, MetricsLogger
 )
 
@@ -32,10 +32,10 @@ def set_seed(seed):
 def get_optimizer(model, optimizer_name, config):
     """
     Create optimizer based on name
-    
+
     Args:
         model: Model to optimize
-        optimizer_name: Name of optimizer ('sgd', 'momentum', 'adagrad', 'adam')
+        optimizer_name: Name of optimizer ('sgd', 'momentum', 'adagrad', 'adam', 'radam')
         config: Configuration object
         
     Returns:
@@ -56,6 +56,8 @@ def get_optimizer(model, optimizer_name, config):
         return Adagrad(model.parameters(), **opt_config)
     elif optimizer_name == 'adam':
         return Adam(model.parameters(), **opt_config)
+    elif optimizer_name == 'radam':
+        return RAdam(model.parameters(), **opt_config)
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
@@ -82,7 +84,8 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
             warmup_steps=config.warmup_steps,
             decay_steps=config.lr_decay_steps,
             max_lr=optimizer.param_groups[0]['lr'],
-            min_lr=config.min_lr
+            min_lr=config.min_lr,
+            use_warmup=config.use_warmup
         )
     
     # Initialize logger
@@ -92,6 +95,8 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
     model.train()
     step = 0
     total_steps = config.num_epochs * (len(train_dataset) // config.batch_size)
+    best_val_loss = float('inf')
+    recent_checkpoints = []
     
     print(f"\n{'='*60}")
     print(f"Training with {experiment_name}")
@@ -154,21 +159,30 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
                     val_loss, val_perplexity = evaluate(
                         model, val_dataset, config.batch_size, device
                     )
-                    
+
                     logger.log(
                         step=step,
                         val_loss=val_loss,
                         val_perplexity=val_perplexity
                     )
-                    
+
                     print(f"\nStep {step} | Val Loss: {val_loss:.4f} | Perplexity: {val_perplexity:.2f}")
-                    
+
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_checkpoint_path = os.path.join(
+                            config.checkpoint_dir,
+                            f"{experiment_name}_best.pt"
+                        )
+                        save_checkpoint(model, optimizer, step, val_loss, best_checkpoint_path)
+                        print(f"New best checkpoint saved to {best_checkpoint_path}")
+
                     # Generate sample
                     if step % (config.eval_interval * 5) == 0:
                         sample = generate_sample(
-                            model, train_dataset, 
-                            prompt="ROMEO:", 
-                            max_tokens=100, 
+                            model, train_dataset,
+                            prompt="ROMEO:",
+                            max_tokens=100,
                             device=device
                         )
                         print(f"\nGenerated sample:\n{sample}\n")
@@ -180,6 +194,12 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
                         f"{experiment_name}_step_{step}.pt"
                     )
                     save_checkpoint(model, optimizer, step, loss.item(), checkpoint_path)
+                    recent_checkpoints.append(checkpoint_path)
+                    if len(recent_checkpoints) > config.max_checkpoints:
+                        old_checkpoint = recent_checkpoints.pop(0)
+                        if os.path.exists(old_checkpoint):
+                            os.remove(old_checkpoint)
+                            print(f"Removed old checkpoint {old_checkpoint}")
                 
                 pbar.update(1)
     
@@ -215,7 +235,7 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
 def main():
     parser = argparse.ArgumentParser(description='Train Tiny Transformer LM')
     parser.add_argument('--optimizer', type=str, default='adam',
-                       choices=['sgd', 'momentum', 'adagrad', 'adam'],
+                       choices=['sgd', 'momentum', 'adagrad', 'adam', 'radam'],
                        help='Optimizer to use')
     parser.add_argument('--compare_all', action='store_true',
                        help='Train with all optimizers for comparison')
@@ -227,6 +247,12 @@ def main():
                        help='Batch size (overrides config)')
     parser.add_argument('--seed', type=int, default=None,
                        help='Random seed (overrides config)')
+    parser.add_argument('--no-lr-schedule', action='store_true',
+                       help='Disable learning rate scheduling entirely')
+    parser.add_argument('--no-warmup', action='store_true',
+                       help='Disable LR warmup while keeping decay schedule')
+    parser.add_argument('--max-checkpoints', type=int, default=None,
+                       help='Maximum number of rolling checkpoints to keep')
     
     args = parser.parse_args()
     
@@ -240,6 +266,12 @@ def main():
         config.batch_size = args.batch_size
     if args.seed is not None:
         config.seed = args.seed
+    if args.max_checkpoints is not None:
+        config.max_checkpoints = args.max_checkpoints
+    if args.no_lr_schedule:
+        config.use_lr_schedule = False
+    if args.no_warmup:
+        config.use_warmup = False
     
     # Set random seed
     set_seed(config.seed)
@@ -253,7 +285,7 @@ def main():
     print("Loading data...")
     train_dataset, val_dataset = load_data(
         config.data_dir,
-        config.max_seq_len,
+        config.block_size,
         config.train_split
     )
     
@@ -262,7 +294,7 @@ def main():
     
     # Determine which optimizers to train
     if args.compare_all:
-        optimizers_to_train = ['sgd', 'momentum', 'adagrad', 'adam']
+        optimizers_to_train = ['sgd', 'momentum', 'adagrad', 'adam', 'radam']
     else:
         optimizers_to_train = [args.optimizer]
     
@@ -273,15 +305,17 @@ def main():
         print(f"{'#'*60}\n")
         
         # Create fresh model for each optimizer
-        model = TinyTransformerLM(
+        model_config = GPTConfig(
+            block_size=config.block_size,
             vocab_size=config.vocab_size,
-            d_model=config.d_model,
-            n_layers=config.n_layers,
-            n_heads=config.n_heads,
-            d_ff=config.d_ff,
-            max_seq_len=config.max_seq_len,
-            dropout=config.dropout
+            n_layer=config.n_layer,
+            n_head=config.n_head,
+            n_embd=config.n_embd,
+            dropout=config.dropout,
+            bias=config.bias,
         )
+
+        model = GPT(model_config)
         
         # Create optimizer
         optimizer = get_optimizer(model, opt_name, config)
@@ -293,6 +327,10 @@ def main():
         
         # Train
         experiment_name = opt_name
+        if not config.use_warmup and config.use_lr_schedule:
+            experiment_name = f"{experiment_name}_no_warmup"
+        elif not config.use_lr_schedule:
+            experiment_name = f"{experiment_name}_no_sched"
         train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
     
     # Compare all optimizers if training multiple

@@ -12,13 +12,14 @@ class LRScheduler:
     Learning rate scheduler with warmup and cosine decay
     """
     
-    def __init__(self, optimizer, warmup_steps, decay_steps, max_lr, min_lr):
+    def __init__(self, optimizer, warmup_steps, decay_steps, max_lr, min_lr, use_warmup=True):
         self.optimizer = optimizer
         self.warmup_steps = warmup_steps
         self.decay_steps = decay_steps
         self.max_lr = max_lr
         self.min_lr = min_lr
         self.current_step = 0
+        self.use_warmup = use_warmup
     
     def step(self):
         """Update learning rate"""
@@ -32,7 +33,7 @@ class LRScheduler:
     
     def _get_lr(self):
         """Calculate current learning rate"""
-        if self.current_step < self.warmup_steps:
+        if self.use_warmup and self.warmup_steps > 0 and self.current_step < self.warmup_steps:
             # Linear warmup
             lr = self.max_lr * self.current_step / self.warmup_steps
         elif self.current_step < self.decay_steps:
