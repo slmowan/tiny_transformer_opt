@@ -8,7 +8,7 @@ import argparse
 import os
 
 from config import Config
-from model import TinyTransformerLM
+from model import GPT, GPTConfig
 from optimizers import SGD, MomentumSGD, Adagrad, Adam
 from utils import load_data, evaluate, generate_sample
 
@@ -26,15 +26,17 @@ def load_trained_model(checkpoint_path, config, device='cpu'):
         model: Loaded model
         step: Training step of checkpoint
     """
-    model = TinyTransformerLM(
+    model_config = GPTConfig(
+        block_size=config.block_size,
         vocab_size=config.vocab_size,
-        d_model=config.d_model,
-        n_layers=config.n_layers,
-        n_heads=config.n_heads,
-        d_ff=config.d_ff,
-        max_seq_len=config.max_seq_len,
-        dropout=config.dropout
+        n_layer=config.n_layer,
+        n_head=config.n_head,
+        n_embd=config.n_embd,
+        dropout=config.dropout,
+        bias=config.bias,
     )
+
+    model = GPT(model_config)
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -84,10 +86,13 @@ def evaluate_all_checkpoints(config, dataset, device='cpu'):
         device: Device to run evaluation on
     """
     checkpoint_dir = config.checkpoint_dir
-    checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.endswith('_final.pt')]
+    checkpoint_files = [
+        f for f in os.listdir(checkpoint_dir)
+        if f.endswith('_best.pt') or f.endswith('_final.pt')
+    ]
     
     if not checkpoint_files:
-        print("No final checkpoints found!")
+        print("No checkpoints found!")
         return
     
     print("\n" + "="*60)
@@ -98,7 +103,7 @@ def evaluate_all_checkpoints(config, dataset, device='cpu'):
     
     for checkpoint_file in checkpoint_files:
         checkpoint_path = os.path.join(checkpoint_dir, checkpoint_file)
-        optimizer_name = checkpoint_file.replace('_final.pt', '')
+        optimizer_name = checkpoint_file.replace('_final.pt', '').replace('_best.pt', '')
         
         print(f"\nEvaluating {optimizer_name}...")
         
@@ -138,7 +143,7 @@ def main():
     parser.add_argument('--checkpoint', type=str, default=None,
                        help='Path to specific checkpoint to evaluate')
     parser.add_argument('--optimizer', type=str, default='adam',
-                       choices=['sgd', 'momentum', 'adagrad', 'adam'],
+                       choices=['sgd', 'momentum', 'adagrad', 'adam', 'radam'],
                        help='Optimizer name (used if checkpoint not specified)')
     parser.add_argument('--evaluate_all', action='store_true',
                        help='Evaluate all final checkpoints')
@@ -162,7 +167,7 @@ def main():
     print("Loading data...")
     train_dataset, val_dataset = load_data(
         config.data_dir,
-        config.max_seq_len,
+        config.block_size,
         config.train_split
     )
     config.vocab_size = train_dataset.vocab_size
@@ -176,10 +181,15 @@ def main():
     if args.checkpoint:
         checkpoint_path = args.checkpoint
     else:
-        checkpoint_path = os.path.join(
+        best_candidate = os.path.join(
+            config.checkpoint_dir,
+            f"{args.optimizer}_best.pt"
+        )
+        default_candidate = os.path.join(
             config.checkpoint_dir,
             f"{args.optimizer}_final.pt"
         )
+        checkpoint_path = best_candidate if os.path.exists(best_candidate) else default_candidate
     
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found: {checkpoint_path}")

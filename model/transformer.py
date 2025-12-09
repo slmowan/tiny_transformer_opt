@@ -1,223 +1,206 @@
 """
-Transformer Language Model Implementation
-A 2-layer decoder-only Transformer for character-level language modeling
+NanoGPT-inspired Transformer language model with flash attention support.
 """
+
+import math
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 
-class MultiHeadAttention(nn.Module):
-    """Multi-head self-attention mechanism"""
-    
-    def __init__(self, d_model, n_heads, dropout=0.1):
+class LayerNorm(nn.Module):
+    """LayerNorm with optional bias to mirror NanoGPT defaults."""
+
+    def __init__(self, ndim, bias: bool):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
-        
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_k = d_model // n_heads
-        
-        # Linear projections
-        self.W_q = nn.Linear(d_model, d_model)
-        self.W_k = nn.Linear(d_model, d_model)
-        self.W_v = nn.Linear(d_model, d_model)
-        self.W_o = nn.Linear(d_model, d_model)
-        
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x, mask=None):
-        batch_size, seq_len, d_model = x.shape
-        
-        # Linear projections and reshape for multi-head attention
-        Q = self.W_q(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-        K = self.W_k(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-        V = self.W_v(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-        
-        # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-        
-        # Apply causal mask
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-        
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        
-        # Apply attention to values
-        attn_output = torch.matmul(attn_weights, V)
-        
-        # Reshape and apply output projection
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
-        output = self.W_o(attn_output)
-        
-        return output
+        self.weight = nn.Parameter(torch.ones(ndim))
+        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
 
-class FeedForward(nn.Module):
-    """Position-wise feed-forward network"""
-    
-    def __init__(self, d_model, d_ff, dropout=0.1):
+class CausalSelfAttention(nn.Module):
+    def __init__(self, config: "GPTConfig"):
         super().__init__()
-        self.linear1 = nn.Linear(d_model, d_ff)
-        self.linear2 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x):
-        return self.linear2(self.dropout(F.relu(self.linear1(x))))
+        assert config.n_embd % config.n_head == 0, "Embedding size must be divisible by number of heads"
+
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.dropout = config.dropout
+        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+
+        if not self.flash:
+            # Causal mask for pre-PyTorch 2.0 environments.
+            self.register_buffer(
+                "bias",
+                torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size),
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        bsz, seq_len, channels = x.size()
+
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(bsz, seq_len, self.n_head, channels // self.n_head).transpose(1, 2)
+        q = q.view(bsz, seq_len, self.n_head, channels // self.n_head).transpose(1, 2)
+        v = v.view(bsz, seq_len, self.n_head, channels // self.n_head).transpose(1, 2)
+
+        if self.flash:
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=True,
+            )
+        else:
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:, :, :seq_len, :seq_len] == 0, float("-inf"))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v
+
+        y = y.transpose(1, 2).contiguous().view(bsz, seq_len, channels)
+        y = self.resid_dropout(self.c_proj(y))
+        return y
 
 
-class TransformerBlock(nn.Module):
-    """Single Transformer decoder block"""
-    
-    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+class MLP(nn.Module):
+    def __init__(self, config: "GPTConfig"):
         super().__init__()
-        self.attention = MultiHeadAttention(d_model, n_heads, dropout)
-        self.feed_forward = FeedForward(d_model, d_ff, dropout)
-        self.ln1 = nn.LayerNorm(d_model)
-        self.ln2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x, mask=None):
-        # Self-attention with residual connection
-        attn_output = self.attention(self.ln1(x), mask)
-        x = x + self.dropout(attn_output)
-        
-        # Feed-forward with residual connection
-        ff_output = self.feed_forward(self.ln2(x))
-        x = x + self.dropout(ff_output)
-        
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.gelu = nn.GELU()
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
         return x
 
 
-class TinyTransformerLM(nn.Module):
-    """Small-scale Transformer Language Model"""
-    
-    def __init__(self, vocab_size, d_model=128, n_layers=2, n_heads=4, 
-                 d_ff=512, max_seq_len=256, dropout=0.1):
+class Block(nn.Module):
+    def __init__(self, config: "GPTConfig"):
         super().__init__()
-        
-        self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.max_seq_len = max_seq_len
-        
-        # Token and position embeddings
-        self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.position_embedding = nn.Embedding(max_seq_len, d_model)
-        
-        # Transformer blocks
-        self.blocks = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, d_ff, dropout)
-            for _ in range(n_layers)
-        ])
-        
-        # Final layer norm and output projection
-        self.ln_f = nn.LayerNorm(d_model)
-        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
-        
-        # Tie weights between token embedding and output projection
-        self.lm_head.weight = self.token_embedding.weight
-        
-        self.dropout = nn.Dropout(dropout)
-        
-        # Initialize weights
+        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.mlp = MLP(config)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
+
+@dataclass
+class GPTConfig:
+    block_size: int = 256
+    vocab_size: int = 50304
+    n_layer: int = 2
+    n_head: int = 4
+    n_embd: int = 128
+    dropout: float = 0.1
+    bias: bool = True
+
+
+class GPT(nn.Module):
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        assert config.vocab_size is not None
+        assert config.block_size is not None
+        self.config = config
+
+        self.transformer = nn.ModuleDict(
+            dict(
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                wpe=nn.Embedding(config.block_size, config.n_embd),
+                drop=nn.Dropout(config.dropout),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f=LayerNorm(config.n_embd, bias=config.bias),
+            )
+        )
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.transformer.wte.weight = self.lm_head.weight
+
         self.apply(self._init_weights)
-        
-    def _init_weights(self, module):
-        """Initialize weights using Xavier/Glorot initialization"""
+        for pn, p in self.named_parameters():
+            if pn.endswith("c_proj.weight"):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
+
+        print(f"number of parameters: {self.get_num_params()/1e6:.2f}M")
+
+    def get_num_params(self, non_embedding: bool = True) -> int:
+        n_params = sum(p.numel() for p in self.parameters())
+        if non_embedding:
+            n_params -= self.transformer.wpe.weight.numel()
+        return n_params
+
+    def count_parameters(self) -> int:
+        """Compatibility helper for existing training scripts."""
+        return self.get_num_params()
+
+    def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            torch.nn.init.ones_(module.weight)
-            torch.nn.init.zeros_(module.bias)
-    
-    def forward(self, idx, targets=None):
-        """
-        Forward pass through the model
-        
-        Args:
-            idx: Input token indices (batch_size, seq_len)
-            targets: Target token indices (batch_size, seq_len) for training
-            
-        Returns:
-            logits: Output logits (batch_size, seq_len, vocab_size)
-            loss: Cross-entropy loss (if targets provided)
-        """
-        batch_size, seq_len = idx.shape
-        assert seq_len <= self.max_seq_len, f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}"
-        
-        # Create position indices
-        pos = torch.arange(0, seq_len, dtype=torch.long, device=idx.device).unsqueeze(0)
-        
-        # Embed tokens and positions
-        token_emb = self.token_embedding(idx)
-        pos_emb = self.position_embedding(pos)
-        x = self.dropout(token_emb + pos_emb)
-        
-        # Create causal mask
-        mask = torch.tril(torch.ones(seq_len, seq_len, device=idx.device)).view(1, 1, seq_len, seq_len)
-        
-        # Pass through transformer blocks
-        for block in self.blocks:
-            x = block(x, mask)
-        
-        # Final layer norm and projection to vocabulary
-        x = self.ln_f(x)
-        logits = self.lm_head(x)
-        
-        # Calculate loss if targets are provided
-        loss = None
+
+    def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
+        device = idx.device
+        bsz, seq_len = idx.size()
+        assert seq_len <= self.config.block_size, (
+            f"Cannot forward sequence of length {seq_len}, block size is only {self.config.block_size}"
+        )
+        pos = torch.arange(0, seq_len, dtype=torch.long, device=device)
+
+        tok_emb = self.transformer.wte(idx)
+        pos_emb = self.transformer.wpe(pos)
+        x = self.transformer.drop(tok_emb + pos_emb)
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x)
+
         if targets is not None:
-            loss = F.cross_entropy(
-                logits.view(-1, self.vocab_size),
-                targets.view(-1),
-                ignore_index=-1
-            )
-        
+            logits = self.lm_head(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
+        else:
+            logits = self.lm_head(x[:, [-1], :])
+            loss = None
+
         return logits, loss
-    
+
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-        """
-        Generate new tokens autoregressively
-        
-        Args:
-            idx: Starting token indices (batch_size, seq_len)
-            max_new_tokens: Number of tokens to generate
-            temperature: Sampling temperature
-            top_k: Top-k sampling parameter
-            
-        Returns:
-            Generated token indices
-        """
+    def generate(
+        self,
+        idx: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+    ) -> torch.Tensor:
         for _ in range(max_new_tokens):
-            # Crop sequence if too long
-            idx_cond = idx if idx.size(1) <= self.max_seq_len else idx[:, -self.max_seq_len:]
-            
-            # Forward pass
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size :]
             logits, _ = self(idx_cond)
             logits = logits[:, -1, :] / temperature
-            
-            # Apply top-k filtering
+
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = float('-inf')
-            
-            # Sample from distribution
+                logits[logits < v[:, [-1]]] = float("-inf")
+
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
-            
-            # Append to sequence
             idx = torch.cat([idx, idx_next], dim=1)
-        
+
         return idx
-    
-    def count_parameters(self):
-        """Count total number of trainable parameters"""
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
