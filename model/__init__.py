@@ -1,4 +1,4 @@
 """Model package"""
-from .transformer import TinyTransformerLM
+from .transformer import GPT, GPTConfig
 
-__all__ = ['TinyTransformerLM']
+__all__ = ['GPT', 'GPTConfig']
