@@ -26,11 +26,13 @@ class Config:
     learning_rate = 0.001
     weight_decay = 0.01
     betas = (0.9, 0.999)  # For Adam
+    radam_betas = (0.9, 0.999)  # For RAdam
     momentum = 0.9  # For Momentum SGD
     eps = 1e-8  # For Adam and Adagrad
 
     # Learning rate scheduling
     use_lr_schedule = True
+    use_warmup = True
     warmup_steps = 500
     lr_decay_steps = 10000
     min_lr = 1e-5
@@ -49,6 +51,7 @@ class Config:
     data_dir = './data'
     checkpoint_dir = './checkpoints'
     log_dir = './logs'
+    max_checkpoints = 3
 
     # Logging
     log_interval = 10  # Log every N steps
@@ -77,6 +80,12 @@ class Config:
                 'weight_decay': 0.0
             },
             'adam': {
+                'lr': 0.001,
+                'betas': (0.9, 0.999),
+                'eps': 1e-8,
+                'weight_decay': 0.01
+            },
+            'radam': {
                 'lr': 0.001,
                 'betas': (0.9, 0.999),
                 'eps': 1e-8,
