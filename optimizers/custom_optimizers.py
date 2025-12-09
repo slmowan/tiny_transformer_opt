@@ -162,7 +162,7 @@ class Adagrad(Optimizer):
 class Adam(Optimizer):
     """Adam optimizer"""
     
-    def __init__(self, params, lr=0.001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
+    def __init__(self, params, lr=0.0003, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= betas[0] < 1.0:
@@ -199,7 +199,9 @@ class Adam(Optimizer):
                 
                 # Apply weight decay
                 if weight_decay != 0:
+                    # p.mul_(1 - lr * weight_decay)
                     grad = grad.add(p, alpha=weight_decay)
+                # p.addcdiv_(m_hat, v_hat.sqrt().add_(eps), value=-lr)
                 
                 param_state = self.state[p]
                 

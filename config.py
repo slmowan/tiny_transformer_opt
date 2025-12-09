@@ -18,7 +18,7 @@ class Config:
 
     # Training settings
     batch_size = 64
-    num_epochs = 50
+    num_epochs = 10
     eval_interval = 100  # Evaluate every N steps
     # Checkpointing
     # Set to a positive integer to save rolling checkpoints every N steps; set to 0 to
@@ -26,7 +26,7 @@ class Config:
     save_interval = 0
 
     # Optimizer settings
-    learning_rate = 0.001
+    learning_rate = 0.0003
     weight_decay = 0.01
     betas = (0.9, 0.999)  # For Adam
     radam_betas = (0.9, 0.999)  # For RAdam
@@ -83,7 +83,7 @@ class Config:
                 'weight_decay': 0.0
             },
             'adam': {
-                'lr': 0.001,
+                'lr': 0.0003,
                 'betas': (0.9, 0.999),
                 'eps': 1e-8,
                 'weight_decay': 0.01
