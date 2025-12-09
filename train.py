@@ -109,13 +109,15 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
         for epoch in range(config.num_epochs):
             # Shuffle data each epoch by generating random batches
             num_batches = len(train_dataset) // config.batch_size
-            
+            epoch_train_loss = 0.0
+
             for batch_idx in range(num_batches):
                 # Get batch
                 x, y = get_batch(train_dataset, config.batch_size, device)
-                
+
                 # Forward pass
                 logits, loss = model(x, y)
+                epoch_train_loss += loss.item()
                 
                 # Backward pass
                 optimizer.zero_grad()
@@ -200,8 +202,29 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
                         if os.path.exists(old_checkpoint):
                             os.remove(old_checkpoint)
                             print(f"Removed old checkpoint {old_checkpoint}")
-                
+
                 pbar.update(1)
+
+            # End of epoch evaluation
+            epoch_train_loss /= max(1, num_batches)
+            val_loss, val_perplexity = evaluate(
+                model, val_dataset, config.batch_size, device
+            )
+
+            logger.log(
+                step=step,
+                train_loss=epoch_train_loss,
+                val_loss=val_loss,
+                val_perplexity=val_perplexity,
+                epoch=epoch + 1,
+            )
+
+            print(
+                f"Epoch {epoch + 1}/{config.num_epochs} | "
+                f"Train Loss: {epoch_train_loss:.4f} | "
+                f"Val Loss: {val_loss:.4f} | "
+                f"Perplexity: {val_perplexity:.2f}"
+            )
     
     # Final evaluation
     print("\nFinal evaluation...")
