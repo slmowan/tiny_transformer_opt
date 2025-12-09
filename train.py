@@ -109,13 +109,15 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
         for epoch in range(config.num_epochs):
             # Shuffle data each epoch by generating random batches
             num_batches = len(train_dataset) // config.batch_size
-            
+            epoch_train_loss = 0.0
+
             for batch_idx in range(num_batches):
                 # Get batch
                 x, y = get_batch(train_dataset, config.batch_size, device)
-                
+
                 # Forward pass
                 logits, loss = model(x, y)
+                epoch_train_loss += loss.item()
                 
                 # Backward pass
                 optimizer.zero_grad()
@@ -147,45 +149,17 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
                         learning_rate=current_lr,
                         gradient_norm=grad_norm
                     )
-                    
+
                     pbar.set_postfix({
                         'loss': f'{loss.item():.4f}',
                         'lr': f'{current_lr:.6f}',
                         'grad': f'{grad_norm:.4f}'
                     })
-                
-                # Evaluation
-                if step % config.eval_interval == 0:
-                    val_loss, val_perplexity = evaluate(
-                        model, val_dataset, config.batch_size, device
+
+                    print(
+                        f"Step {step} | Train Loss: {loss.item():.4f} | "
+                        f"LR: {current_lr:.6f} | Grad Norm: {grad_norm:.4f}"
                     )
-
-                    logger.log(
-                        step=step,
-                        val_loss=val_loss,
-                        val_perplexity=val_perplexity
-                    )
-
-                    print(f"\nStep {step} | Val Loss: {val_loss:.4f} | Perplexity: {val_perplexity:.2f}")
-
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        best_checkpoint_path = os.path.join(
-                            config.checkpoint_dir,
-                            f"{experiment_name}_best.pt"
-                        )
-                        save_checkpoint(model, optimizer, step, val_loss, best_checkpoint_path)
-                        print(f"New best checkpoint saved to {best_checkpoint_path}")
-
-                    # Generate sample
-                    if step % (config.eval_interval * 5) == 0:
-                        sample = generate_sample(
-                            model, train_dataset,
-                            prompt="ROMEO:",
-                            max_tokens=100,
-                            device=device
-                        )
-                        print(f"\nGenerated sample:\n{sample}\n")
                 
                 # Save periodic checkpoints only if enabled
                 if config.save_interval and config.save_interval > 0 and step % config.save_interval == 0:
@@ -200,8 +174,38 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
                         if os.path.exists(old_checkpoint):
                             os.remove(old_checkpoint)
                             print(f"Removed old checkpoint {old_checkpoint}")
-                
+
                 pbar.update(1)
+
+            # End of epoch evaluation
+            epoch_train_loss /= max(1, num_batches)
+            val_loss, val_perplexity = evaluate(
+                model, val_dataset, config.batch_size, device
+            )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_checkpoint_path = os.path.join(
+                    config.checkpoint_dir,
+                    f"{experiment_name}_best.pt"
+                )
+                save_checkpoint(model, optimizer, step, val_loss, best_checkpoint_path)
+                print(f"New best checkpoint saved to {best_checkpoint_path}")
+
+            logger.log(
+                step=step,
+                train_loss=epoch_train_loss,
+                val_loss=val_loss,
+                val_perplexity=val_perplexity,
+                epoch=epoch + 1,
+            )
+
+            print(
+                f"Epoch {epoch + 1}/{config.num_epochs} | "
+                f"Train Loss: {epoch_train_loss:.4f} | "
+                f"Val Loss: {val_loss:.4f} | "
+                f"Perplexity: {val_perplexity:.2f}"
+            )
     
     # Final evaluation
     print("\nFinal evaluation...")
