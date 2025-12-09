@@ -20,7 +20,10 @@ class Config:
     batch_size = 64
     num_epochs = 50
     eval_interval = 100  # Evaluate every N steps
-    save_interval = 1000  # Save checkpoint every N steps
+    # Checkpointing
+    # Set to a positive integer to save rolling checkpoints every N steps; set to 0 to
+    # disable periodic checkpointing and only keep best/final checkpoints.
+    save_interval = 0
 
     # Optimizer settings
     learning_rate = 0.001

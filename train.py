@@ -187,8 +187,8 @@ def train(model, train_dataset, val_dataset, optimizer, config, experiment_name)
                         )
                         print(f"\nGenerated sample:\n{sample}\n")
                 
-                # Save checkpoint
-                if step % config.save_interval == 0:
+                # Save periodic checkpoints only if enabled
+                if config.save_interval and config.save_interval > 0 and step % config.save_interval == 0:
                     checkpoint_path = os.path.join(
                         config.checkpoint_dir,
                         f"{experiment_name}_step_{step}.pt"
@@ -253,6 +253,8 @@ def main():
                        help='Disable LR warmup while keeping decay schedule')
     parser.add_argument('--max-checkpoints', type=int, default=None,
                        help='Maximum number of rolling checkpoints to keep')
+    parser.add_argument('--save-interval', type=int, default=None,
+                       help='Save rolling checkpoints every N steps (0 disables periodic saves)')
     
     args = parser.parse_args()
     
@@ -268,6 +270,8 @@ def main():
         config.seed = args.seed
     if args.max_checkpoints is not None:
         config.max_checkpoints = args.max_checkpoints
+    if args.save_interval is not None:
+        config.save_interval = args.save_interval
     if args.no_lr_schedule:
         config.use_lr_schedule = False
     if args.no_warmup:
