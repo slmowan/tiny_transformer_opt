@@ -8,7 +8,7 @@ import argparse
 import os
 
 from config import Config
-from model import TinyTransformerLM
+from model import GPT, GPTConfig
 from optimizers import SGD, MomentumSGD, Adagrad, Adam
 from utils import load_data, evaluate, generate_sample
 
@@ -26,15 +26,17 @@ def load_trained_model(checkpoint_path, config, device='cpu'):
         model: Loaded model
         step: Training step of checkpoint
     """
-    model = TinyTransformerLM(
+    model_config = GPTConfig(
+        block_size=config.block_size,
         vocab_size=config.vocab_size,
-        d_model=config.d_model,
-        n_layers=config.n_layers,
-        n_heads=config.n_heads,
-        d_ff=config.d_ff,
-        max_seq_len=config.max_seq_len,
-        dropout=config.dropout
+        n_layer=config.n_layer,
+        n_head=config.n_head,
+        n_embd=config.n_embd,
+        dropout=config.dropout,
+        bias=config.bias,
     )
+
+    model = GPT(model_config)
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -162,7 +164,7 @@ def main():
     print("Loading data...")
     train_dataset, val_dataset = load_data(
         config.data_dir,
-        config.max_seq_len,
+        config.block_size,
         config.train_split
     )
     config.vocab_size = train_dataset.vocab_size
