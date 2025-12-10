@@ -366,6 +366,17 @@ while True:
     if iter_num > max_iters:
         break
 
+# ensure we log a final eval even if max_iters isn't aligned with eval_interval
+if master_process and (iter_num - 1) % eval_interval != 0:
+    losses = estimate_loss()
+    print(f"final step {iter_num - 1}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    log_metrics({
+        "iter": iter_num - 1,
+        "train_loss": losses['train'],
+        "val_loss": losses['val'],
+        "lr": get_lr(iter_num - 1) if decay_lr else learning_rate,
+    })
+
 if ddp:
     destroy_process_group()
 

@@ -97,16 +97,38 @@ else:
 
 with open(results_file, "a", newline="") as f:
     writer = csv.writer(f)
+    train_json = json.dumps(train_losses)
+    val_json = json.dumps(val_losses)
+    times_json = json.dumps(times_ms)
+    mfu_json = json.dumps(mfu_percent)
     writer.writerow([
         opt,
         lr,
         run_dir,
         val_loss,
-        json.dumps(train_losses),
-        json.dumps(val_losses),
-        json.dumps(times_ms),
-        json.dumps(mfu_percent),
+        train_json,
+        val_json,
+        times_json,
+        mfu_json,
     ])
+
+summary_path = os.path.join(run_dir, "lr_metrics_summary.json")
+with open(summary_path, "w") as f:
+    json.dump(
+        {
+            "optimizer": opt,
+            "learning_rate": lr,
+            "out_dir": run_dir,
+            "best_val_loss": val_loss,
+            "train_losses": train_losses,
+            "val_losses": val_losses,
+            "times_ms": times_ms,
+            "mfu_percent": mfu_percent,
+        },
+        f,
+        indent=2,
+    )
+print(f"saved JSON metrics to {summary_path}")
 PY
   done
 done

@@ -79,6 +79,7 @@ Outputs:
   - `train_losses` and `val_losses` are JSON-encoded arrays logged at each evaluation step.
   - `times_ms` and `mfu_percent` capture per-logging-interval step time (ms) and Model FLOPs Utilization (%) so you can study throughput vs. learning rate.
   - Raw per-step metrics are also stored as JSONL at `out/lr_sweep/<optimizer>/lr_<value>/metrics.jsonl` for custom analysis.
+  - A JSON summary per run is saved to `out/lr_sweep/<optimizer>/lr_<value>/lr_metrics_summary.json` capturing the same training/validation loss sequences, timing, MFU, and best validation loss for downstream reports.
 
 You can modify `OPTIMIZERS` or the hardcoded learning rate grids inside `scripts/lr_sweep.sh` to explore additional candidates.
 `OPTIMIZERS` accepts a space- or comma-separated list (e.g., `OPTIMIZERS="adamw,adam,sgd" ./scripts/lr_sweep.sh`).
