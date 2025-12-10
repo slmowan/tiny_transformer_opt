@@ -20,6 +20,7 @@ import os
 import time
 import math
 import pickle
+import json
 from contextlib import nullcontext
 
 import numpy as np
@@ -33,6 +34,7 @@ from model import GPTConfig, GPT
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
 out_dir = 'out'
+out_dir_by_optimizer = True # if True, nest checkpoints under out/<optimizer_name>
 eval_interval = 2000
 log_interval = 1
 eval_iters = 200
@@ -54,7 +56,9 @@ n_head = 12
 n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
-# adamw optimizer
+# optimizer
+optimizer_name = 'adamw' # options: adamw, adam, sgd, momentum, adagrad
+momentum = 0.9
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
 weight_decay = 1e-1
@@ -75,6 +79,8 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
+if out_dir_by_optimizer:
+    out_dir = os.path.join(out_dir, optimizer_name.lower())
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
@@ -103,6 +109,7 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
+metrics_file = open(os.path.join(out_dir, "metrics.jsonl"), "w") if master_process else None
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -196,7 +203,14 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizer = model.configure_optimizers(
+    weight_decay=weight_decay,
+    learning_rate=learning_rate,
+    betas=(beta1, beta2),
+    device_type=device_type,
+    optimizer_name=optimizer_name,
+    momentum=momentum,
+)
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 checkpoint = None # free up memory
@@ -223,7 +237,7 @@ def estimate_loss():
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
-        out[split] = losses.mean()
+        out[split] = losses.mean().item()
     model.train()
     return out
 
@@ -246,6 +260,13 @@ if wandb_log and master_process:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
+
+def log_metrics(payload: dict):
+    if metrics_file is None:
+        return
+    metrics_file.write(json.dumps(payload) + "\n")
+    metrics_file.flush()
+
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
@@ -263,6 +284,12 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        log_metrics({
+            "iter": iter_num,
+            "train_loss": losses['train'],
+            "val_loss": losses['val'],
+            "lr": lr,
+        })
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
@@ -325,6 +352,13 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        log_metrics({
+            "iter": iter_num,
+            "train_loss": lossf,
+            "lr": lr,
+            "time_ms": dt * 1000.0,
+            "mfu": running_mfu * 100.0,
+        })
     iter_num += 1
     local_iter_num += 1
 
@@ -332,5 +366,19 @@ while True:
     if iter_num > max_iters:
         break
 
+# ensure we log a final eval even if max_iters isn't aligned with eval_interval
+if master_process and (iter_num - 1) % eval_interval != 0:
+    losses = estimate_loss()
+    print(f"final step {iter_num - 1}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    log_metrics({
+        "iter": iter_num - 1,
+        "train_loss": losses['train'],
+        "val_loss": losses['val'],
+        "lr": get_lr(iter_num - 1) if decay_lr else learning_rate,
+    })
+
 if ddp:
     destroy_process_group()
+
+if metrics_file is not None:
+    metrics_file.close()
