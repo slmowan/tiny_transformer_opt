@@ -18,6 +18,7 @@ device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
 compile = True # use PyTorch 2.0 to compile the model to be faster
 profile = False # use pytorch profiler, or just simple benchmarking?
+optimizer_name = 'adamw'
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
@@ -57,7 +58,13 @@ gptconf = GPTConfig(
 model = GPT(gptconf)
 model.to(device)
 
-optimizer = model.configure_optimizers(weight_decay=1e-2, learning_rate=1e-4, betas=(0.9, 0.95), device_type=device_type)
+optimizer = model.configure_optimizers(
+    weight_decay=1e-2,
+    learning_rate=1e-4,
+    betas=(0.9, 0.95),
+    device_type=device_type,
+    optimizer_name=optimizer_name,
+)
 
 if compile:
     print("Compiling model...")
