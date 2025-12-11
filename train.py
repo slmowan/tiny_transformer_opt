@@ -330,10 +330,11 @@ while True:
         X, Y = get_batch('train')
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
-    # clip the gradient
-    if grad_clip != 0.0:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+    # unscale and record gradient norm (and optionally clip)
+    scaler.unscale_(optimizer)
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), grad_clip if grad_clip != 0.0 else float('inf')
+    )
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     scaler.update()
@@ -351,14 +352,26 @@ while True:
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        print(
+            f"iter {iter_num}: loss {lossf:.4f}, grad_norm {grad_norm.item():.4f}, "
+            f"time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%"
+        )
         log_metrics({
             "iter": iter_num,
             "train_loss": lossf,
             "lr": lr,
             "time_ms": dt * 1000.0,
             "mfu": running_mfu * 100.0,
+            "grad_norm": grad_norm.item(),
         })
+        if wandb_log:
+            wandb.log({
+                "iter": iter_num,
+                "train/loss": lossf,
+                "lr": lr,
+                "mfu": running_mfu * 100,
+                "train/grad_norm": grad_norm.item(),
+            })
     iter_num += 1
     local_iter_num += 1
 
