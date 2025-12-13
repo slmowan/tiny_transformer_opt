@@ -35,9 +35,10 @@ def decode(l):
     return ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
 
 # create the train and test splits
+# our experiments will change the ratio between train and val set here. 2025/12/13
 n = len(data)
-train_data = data[:int(n*0.9)]
-val_data = data[int(n*0.9):]
+train_data = data[:int(n*0.5)]
+val_data = data[int(n*0.5):]
 
 # encode both to integers
 train_ids = encode(train_data)

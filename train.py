@@ -273,10 +273,14 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+random_disturb_interval = 1000 # add a global variable here for the random perturbation experiment
 while True:
 
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
+    # the random perturbation experiment (282-283)
+    if (random_disturb_interval > 0) and (iter_num % random_disturb_interval == 0):
+        lr = learning_rate * 100
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
