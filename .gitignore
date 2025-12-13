@@ -32,8 +32,6 @@ anaconda3/
 
 # Dataset & tokenizer cache
 # (HuggingFace datasets, tokenizers, transformers)
-data/
-datasets/
 .cache/
 **/dataset.arrow
 **/cache-*
